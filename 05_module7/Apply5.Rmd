@@ -1,0 +1,272 @@
+---
+title: "Apply 5"
+subtitle: "Predicting Board Game Ratings"
+output: 
+  html_document: 
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+Our modeling goal is to predict ratings for board games based on the main characteristics like number of players and game category. How are the ratings distributed?
+
+
+# 1 Explore Data
+
+```{r}
+library(tidyverse)
+ratings <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/ratings.csv")
+
+details <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/details.csv")
+
+```
+
+Join the data
+```{r}
+ratings_joined <- ratings %>%
+    left_join(details, by = "id")
+```
+
+Create a binary target variable
+```{r}
+# Is it top 25% in average rating?
+
+ratings_cat <- ratings_joined %>% mutate(is_top_25 = if_else(average > 7.04, "yes", "no"))
+skimr::skim(ratings_cat)
+```
+
+
+```{r}
+ratings_cat %>%
+    ggplot(aes(is_top_25)) +
+    geom_bar()
+    
+ratings_cat %>%
+    filter(!is.na(minage)) %>%
+    mutate(minage = cut_number(minage, 4)) %>%
+    ggplot(aes(y = minage, fill = is_top_25)) +
+    geom_bar(position = "fill")
+```
+
+# 2 Tune an xgboost model 
+xgboost would be a good fit for a large dataset like this. It throws a large sets of hyperparameters and see which one sticks.
+split
+```{r}
+library(tidymodels)
+
+set.seed(123)
+game_split <- ratings_cat %>%
+    select(name, is_top_25, matches("min|max"), boardgamecategory) %>%
+    na.omit() %>%
+    initial_split(strata = is_top_25)
+
+game_train <- training(game_split)
+game_test  <- testing(game_split)
+
+set.seed(234)
+game_folds <- rsample::vfold_cv(game_train, strata = is_top_25)
+game_folds
+```
+
+feature engineering
+
+```{r}
+library(textrecipes)
+
+split_category <- function(x) {
+    
+    x %>%
+        str_split(", ") %>%
+        # map(.x = ., .f = ~str_remove_all(.x, "[:punct:]")) %>%
+        # map(~str_remove_all(.x, "[:punct:]")) %>%
+        map(str_remove_all, "[:punct:]") %>%
+        map(str_squish) %>% 
+        map(str_to_lower) %>% 
+        map(str_replace_all, " ", "_")
+    
+}
+
+game_rec <- recipe(is_top_25 ~ ., data = game_train) %>%
+    update_role(name, new_role = "id") %>%
+    step_tokenize(boardgamecategory, custom_token = split_category) %>%
+    step_tokenfilter(boardgamecategory, max_tokens = 30) %>%
+    step_tf(boardgamecategory)
+
+game_prep <- prep(game_rec)
+bake(game_prep, new_data = game_train)
+```
+
+
+```{r eval = FALSE}
+library(usemodels)
+use_xgboost(is_top_25 ~ ., data = game_train)
+```
+
+Model specification
+```{r}
+xgb_spec <-
+  boost_tree(
+    trees = tune(),
+    mtry = tune(),
+    min_n = tune(),
+    learn_rate = 0.01
+  ) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+```
+
+Workflow
+```{r}
+xgb_wf <- workflow(game_rec, xgb_spec)
+xgb_wf
+```
+
+Tune 
+```{r}
+library(finetune)
+doParallel::registerDoParallel()
+
+set.seed(99383)
+# xgboost_tune <-
+#     finetune::tune_race_anova(
+#         object = xgboost_workflow, 
+#         game_folds,
+#         grid = 5,
+#         control = control_race(verbose_elim = TRUE)
+#         )
+
+xgb_game_rs <-
+    tune_grid(
+        xgb_wf,
+        game_folds,
+        grid = 2,
+        control = control_grid(pkgs = c("stringr", "purrr"))
+    )
+```
+
+
+# 3 Evaluate models
+
+## 3.a View the best model
+```{r}
+collect_metrics(xgb_game_rs)
+# collect_predictions(xgb_game_rs)
+
+# conf_mat_resampled(xgb_game_rs, tidy = FALSE) %>%
+#     autoplot()
+```
+
+## 3.b Fit the best model to train data (finalize_workflow) evaluate on test data
+```{r}
+xgb_last <- 
+    xgb_wf %>% 
+    finalize_workflow(select_best(xgb_game_rs, metric = "accuracy")) %>%
+    last_fit(game_split)
+```
+
+## 3.d Collect metrics
+```{r}
+xgb_last %>% collect_metrics()
+```
+
+## 3.e Predict (extract_workflow)
+```{r}
+xgb_last %>%
+    extract_workflow() %>%
+    predict(game_test[1,])
+```
+
+## 3.f Important variables 
+using the vip package (extract_fit_parsnip)
+```{r}
+library(vip)
+
+xgb_fit <- extract_fit_parsnip(xgb_last)
+vip::vip(xgb_fit, geom = "point", num_features = 15)
+```
+
+using the SHAPforxgboost package
+```{r}
+library(SHAPforxgboost)
+
+game_shap <- 
+    shap.prep(
+        xgb_model = extract_fit_engine(xgb_fit),  
+        X_train = bake(game_prep, 
+                       has_role("predictor"), 
+                       new_data = NULL, 
+                       composition = "matrix")
+        )
+
+shap.plot.summary(game_shap)
+
+shap.plot.dependence(
+  game_shap,
+  x = "minage",
+  color_feature = "minplayers",
+  size0 = 1.2,
+  smooth = FALSE, add_hist = TRUE
+)
+```
+
+
+
+# CA Questions
+
+1. Question and Data
+
+1.a What is the research question?
+
+
+1.b Describe the data briefly.
+
+
+1.c Describe the first observation (the first row) in the data.
+
+
+
+
+2. Data Exploration and Transformation
+
+2.a What are the characteristics of the key variables used in the analysis? For example, which of the predictors seems to have correlations with the outcome variable? Does any variable have a skewed distribution, missing values, or incorrect information?
+
+
+2.b Describe the differences between the original data and the data transformed for modeling. Why?
+
+
+
+
+3. Data Preparation and Modeling
+
+3.a What are the names of data preparation steps (e.g., step_dummy) mentioned in the video?
+
+
+3.b What is the name of the machine learning models (e.g., random forest) used in the analysis?
+
+
+3.c Describe the steps taken for data preparation. Why?
+
+
+3.d Describe the characteristics of the models used in the analysis, including their advantages and disadvantages.
+
+
+
+
+4. Model Evaluation
+
+4.a What metrics are used in the model evaluation?
+
+
+4.b Describe the characteristics of the metrics used in the analysis, including their advantages and disadvantages.
+
+
+
+
+5. Conclusion
+
+5.a What are the major findings?

@@ -1,0 +1,213 @@
+---
+title: "Time Series Machine Learning"
+author: "Daniel Lee"
+date: "2023-04-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(tidymodels)
+library(modeltime)
+```
+
+Goal: Apply Matt Dancho's tutorial to state unemployment initial claims of New England states.
+
+The following is the replication of [Matt Dancho's tutorial on this page](https://business-science.github.io/timetk/articles/TK03_Forecasting_Using_Time_Series_Signature.html)
+
+## Data: intital claims
+
+```{r}
+start_date <- "1989-01-01"
+
+symbols_txt <- c("CTICLAIMS", # Connecticut
+                 "MEICLAIMS", # Maine
+                 "MAICLAIMS", # Massachusetts
+                 "NHICLAIMS", # New Hampshire
+                 "RIICLAIMS", # Rhode Island
+                 "VTICLAIMS") # Vermont
+
+claims_tbl <- tq_get(symbols_txt, get = "economic.data", from = start_date) %>%
+    mutate(symbol = fct_recode(symbol,
+                               "Connecticut"   = "CTICLAIMS",
+                               "Maine"         = "MEICLAIMS",
+                               "Massachusetts" = "MAICLAIMS",
+                               "New Hampshire" = "NHICLAIMS",
+                               "Rhode Island"  = "RIICLAIMS",
+                               "Vermont"       = "VTICLAIMS")) %>%
+    rename(claims = price)
+```
+
+## Visualize timeseries
+```{r}
+claims_nh_tbl <- claims_tbl %>%
+    filter(symbol == "New Hampshire") %>%
+    select(-symbol)
+
+claims_nh_tbl %>%
+    plot_time_series(date, claims, .interactive = FALSE, .smooth_degree = 0) +
+    coord_cartesian(ylim = c(0,5e3))
+
+# Try different smoother
+```
+
+## Train/Test
+Next, use time_series_split() to make a train/test set.
+
+* Setting assess = "3 months" tells the function to use the last 3-months of data as the testing set.
+* Setting cumulative = TRUE tells the sampling to use all of the prior data as the training set.
+
+```{r}
+splits <- claims_nh_tbl %>%
+  time_series_split(assess = "3 months", cumulative = TRUE)
+```
+
+Next, visualize the train/test split.
+
+* tk_time_series_cv_plan(): Converts the splits object to a data frame
+* plot_time_series_cv_plan(): Plots the time series sampling data using the “date” and “value” columns.
+
+```{r}
+splits %>%
+  tk_time_series_cv_plan() %>%
+  plot_time_series_cv_plan(date, claims)
+```
+
+## Modeling
+
+### Recipe Preprocessing Specification
+The first step is to add the time series signature to the training set, which will be used this to learn the patterns. New in timetk 0.1.3 is integration with the recipes R package:
+
+* The recipes package allows us to add preprocessing steps that are applied sequentially as part of a data transformation pipeline.
+* The timetk has step_timeseries_signature(), which is used to add a number of features that can help machine learning models.
+
+```{r}
+# Add time series signature
+recipe_spec_timeseries <- recipe(claims ~ ., data = training(splits)) %>%
+    step_timeseries_signature(date) 
+```
+
+We can see what happens when we apply a prepared recipe prep() using the bake() function. Many new columns were added from the timestamp “date” feature. These are features we can use in our machine learning models.
+
+```{r}
+bake(prep(recipe_spec_timeseries), new_data = training(splits))
+```
+
+Next, I apply various preprocessing steps to improve the modeling behavior. If you wish to learn more, I have an Advanced Time Series course that will help you learn these techniques.
+
+```{r}
+recipe_spec_final <- recipe_spec_timeseries %>%
+    step_fourier(date, period = 57, K = 1) %>%
+    step_rm(date) %>%
+    step_rm(contains("iso"), contains("minute"), contains("hour"),
+            contains("day"), contains("am.pm"), contains("xts")) %>%
+    step_normalize(contains("index.num"), date_year) %>%
+    step_dummy(contains("lbl"), one_hot = TRUE) 
+
+juice(prep(recipe_spec_final))
+
+# Watch Matt's BSU videos and revise the above preprocessing step
+# step_fourier?
+```
+
+## Model Specification
+Next, let’s create a model specification. We’ll use a lm.
+
+```{r}
+model_spec_lm <- linear_reg(mode = "regression") %>%
+    set_engine("lm")
+```
+
+## Workflow
+We can mary up the preprocessing recipe and the model using a workflow().
+
+```{r}
+workflow_lm <- workflow() %>%
+    add_recipe(recipe_spec_final) %>%
+    add_model(model_spec_lm)
+
+workflow_lm
+```
+
+## Training
+The workflow can be trained with the fit() function.
+
+```{r}
+workflow_fit_lm <- workflow_lm %>% fit(data = training(splits))
+```
+
+## Hyperparameter Tuning
+Linear regression has no parameters. Therefore, this step is not needed. More complex models have hyperparameters that require tuning. Algorithms include:
+
+## Forecasting with Modeltime
+
+### Modeltime Table
+The Modeltime Table organizes the models with IDs and creates generic descriptions to help us keep track of our models. Let’s add the models to a modeltime_table().
+
+```{r}
+model_table <- modeltime_table(
+  workflow_fit_lm
+) 
+
+model_table
+```
+
+### Calibration
+Model Calibration is used to quantify error and estimate confidence intervals. We’ll perform model calibration on the out-of-sample data (aka. the Testing Set) with the modeltime_calibrate() function. Two new columns are generated (“.type” and “.calibration_data”), the most important of which is the “.calibration_data”. This includes the actual values, fitted values, and residuals for the testing set.
+
+```{r}
+calibration_table <- model_table %>%
+  modeltime_calibrate(testing(splits))
+
+calibration_table
+```
+
+### Forecast (Testing Set)
+With calibrated data, we can visualize the testing predictions (forecast).
+
+* Use modeltime_forecast() to generate the forecast data for the testing set as a tibble.
+* Use plot_modeltime_forecast() to visualize the results in interactive and static plot formats.
+
+```{r}
+calibration_table %>%
+  modeltime_forecast(actual_data = claims_nh_tbl) %>%
+  plot_modeltime_forecast()
+```
+
+### Accuracy (Testing Set)
+Next, calculate the testing accuracy to compare the models.
+
+* Use modeltime_accuracy() to generate the out-of-sample accuracy metrics as a tibble.
+* Use table_modeltime_accuracy() to generate interactive and static
+
+```{r}
+calibration_table %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(.interactive = TRUE)
+```
+
+## Refit and Forecast Forward
+Refitting is a best-practice before forecasting the future.
+
+* modeltime_refit(): We re-train on full data (bike_transactions_tbl)
+* modeltime_forecast(): For models that only depend on the “date” feature, we can use h (horizon) to forecast forward. Setting h = "12 months" forecasts then next 12-months of data.
+
+```{r}
+calibration_table %>%
+  modeltime_refit(claims_nh_tbl) %>%
+  modeltime_forecast(h = "12 months", actual_data = claims_nh_tbl) %>%
+  plot_modeltime_forecast(.interactive = TRUE)
+```
+
+
+
+
+
+
+

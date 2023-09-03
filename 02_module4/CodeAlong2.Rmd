@@ -1,0 +1,190 @@
+---
+title: "Code Along 2"
+subtitle: "Predicting Chocolate Ratings"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 8, fig.height = 5)
+```
+
+
+*This template offers an opinionated guide on how to structure a modeling analysis. Your individual modeling analysis may require you to add to, subtract from, or otherwise change this structure, but consider this a general framework to start from. If you want to learn more about using tidymodels, check out our [Getting Started](https://www.tidymodels.org/start/) guide.*
+
+Our modeling goal is to predict ratings for chocolate based on the main characteristics as described by the raters. 
+
+```{r}
+library(tidyverse)
+library(tidytext)
+
+url <- "https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-18/chocolate.csv"
+chocolate <- read_csv(url)
+```
+
+
+## Explore data
+
+Exploratory data analysis (EDA) is an [important part of the modeling process](https://www.tmwr.org/software-modeling.html#model-phases).
+
+```{r}
+chocolate %>%
+    ggplot(aes(rating)) +
+    geom_histogram()
+```
+
+```{r}
+tidy_chocolate <- chocolate %>%
+    unnest_tokens(word, most_memorable_characteristics) 
+
+tidy_chocolate %>%
+    count(word, sort = TRUE)
+
+tidy_chocolate %>%
+    group_by(word) %>%
+    summarise(n = n(), 
+              avg_rating = mean(rating)) %>%
+    ungroup() %>%
+    
+    ggplot(aes(n, avg_rating)) +
+    geom_point(color = "midnightblue") +
+    geom_text(aes(label = word), 
+              check_overlap = TRUE) +
+    geom_hline(yintercept = mean(chocolate$rating),
+               lty = 2, color = "gray50", linewidth = 1.5) +
+    scale_x_log10()
+```
+
+
+## Build models
+
+Let's consider how to [spend our data budget](https://www.tmwr.org/splitting.html):
+
+- create training and testing sets
+- create resampling folds from the *training* set
+
+```{r}
+library(tidymodels)
+
+set.seed(123)
+choco_split <- initial_split(chocolate, strata = rating)
+choco_train <- training(choco_split)
+choco_test <- testing(choco_split)
+
+set.seed(234)
+choco_folds <- vfold_cv(choco_train, strata = rating)
+choco_folds
+```
+
+```{r}
+library(textrecipes)
+
+choco_rec <- 
+    recipe(rating ~ most_memorable_characteristics, 
+           data = choco_train) %>%
+    step_tokenize(most_memorable_characteristics) %>%
+    step_tokenfilter(most_memorable_characteristics, max_tokens = 300) %>%
+    step_tf(most_memorable_characteristics)
+
+choco_prep <- prep(choco_rec)
+bake(choco_prep, new_data = NULL)
+```
+
+Let's create a [**model specification**](https://www.tmwr.org/models.html) for each model we want to try:
+
+```{r}
+svm_spec <-
+    svm_linear() %>%
+    set_engine("LiblineaR") %>%
+    set_mode("regression")
+
+ranger_spec <-
+  rand_forest(trees = 1e3) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+```
+
+To set up your modeling code, consider using the [parsnip addin](https://parsnip.tidymodels.org/reference/parsnip_addin.html) or the [usemodels](https://usemodels.tidymodels.org/) package.
+
+Now let's build a [**model workflow**](https://www.tmwr.org/workflows.html) combining each model specification with a data preprocessor:
+
+```{r}
+svm_wf    <- workflow(choco_rec, svm_spec)
+ranger_wf <- workflow(choco_rec, ranger_spec)
+```
+
+If your feature engineering needs are more complex than provided by a formula like `sex ~ .`, use a [recipe](https://www.tidymodels.org/start/recipes/). [Read more about feature engineering with recipes](https://www.tmwr.org/recipes.html) to learn how they work.
+
+
+## Evaluate models
+
+These models have no tuning parameters so we can evaluate them as they are. [Learn about tuning hyperparameters here.](https://www.tidymodels.org/start/tuning/)
+
+```{r}
+doParallel::registerDoParallel()
+control_preds <- control_resamples(save_pred = TRUE)
+
+svm_rs <- fit_resamples(
+    svm_wf,
+    choco_folds,
+    control = control_preds
+)
+
+ranger_rs <- fit_resamples(
+    ranger_wf,
+    choco_folds,
+    control = control_preds
+)
+```
+
+How did these two models compare?
+
+```{r}
+collect_metrics(svm_rs)
+collect_metrics(ranger_rs)
+
+bind_rows(
+    collect_predictions(svm_rs) %>%
+    mutate(mod = "SVM"),
+    collect_predictions(ranger_rs) %>%
+    mutate(mod = "Ranger")
+) %>%
+    
+    ggplot(aes(rating, .pred, col = id)) +
+    geom_jitter(alpha = 0.5) +
+    geom_abline(lty = 2, linewidth = 1.5, col = "gray50") +
+    facet_wrap(~mod) +
+    coord_fixed()
+
+```
+
+These models perform very similarly, so perhaps we would choose the simpler, linear model. The function `last_fit()` *fits* one final time on the training data and *evaluates* on the testing data. This is the first time we have used the testing data.
+
+```{r}
+svm_last <- last_fit(svm_wf, choco_split)
+```
+
+This object contains a fitted workflow that we can use for prediction.
+
+```{r}
+collect_metrics(svm_last)
+
+svm_last %>%
+    extract_workflow() %>%
+    predict(choco_test[1,])
+
+svm_last %>%
+    extract_workflow() %>%
+    tidy() %>%
+    filter(term != "Bias") %>%
+    mutate(term = str_remove(term, "tf_most_memorable_characteristics_")) %>%
+    group_by(estimate > 0) %>%
+    slice_max(abs(estimate), n = 10) %>%
+    ungroup() %>%
+    
+    ggplot(aes(estimate, fct_reorder(term, estimate))) +
+    geom_col(fill = "midnightblue")
+```
+
+You can save this fitted `final_wf` object to use later with new data, for example with `readr::write_rds()`.

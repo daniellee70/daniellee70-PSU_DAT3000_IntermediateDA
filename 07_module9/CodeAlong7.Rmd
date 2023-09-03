@@ -1,0 +1,140 @@
+---
+title: "Predict the status of #TidyTuesday Bigfoot sightings"
+author: "Daniel Lee"
+date: "2023-04-05"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Goal: Our modeling goal is to predict the classification of a Bigfoot report based on the text used in the report. 
+
+```{r}
+library(tidyverse)
+bigfoot_raw <- read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-09-13/bigfoot.csv')
+
+bigfoot_raw %>%
+  count(classification)
+
+bigfoot <- bigfoot_raw %>%
+    filter(classification != "Class C") %>%
+    mutate(classification = case_when(
+        classification == "Class A" ~ "sighting",
+        classification == "Class B" ~ "possible"
+    ))
+
+bigfoot
+```
+
+## EDA
+
+```{r}
+library(tidytext)
+library(tidylo)
+
+bigfoot %>%
+    unnest_tokens(output = word, input = observed, token = "words") %>%
+    count(classification, word, sort = T) %>%
+    tidylo::bind_log_odds(classification, word, n) %>%
+    arrange(-log_odds_weighted)
+```
+
+
+## Modeling
+
+initial split
+```{r}
+library(tidymodels)
+
+bigfoot_split <- initial_split(bigfoot, strata = classification)
+bigfoot_train <- training(bigfoot_split)
+bigfoot_test  <- testing(bigfoot_split)
+
+bigfoot_folds <- vfold_cv(bigfoot_train, strata = classification)
+bigfoot_folds
+```
+
+feature engineering
+```{r}
+library(textrecipes)
+
+bigfoot_rec <- recipes::recipe(classification ~ observed, data = bigfoot_train) %>%
+    step_tokenize(observed) %>%
+    step_tokenfilter(observed, max_tokens = 2e3) %>%
+    step_tfidf(observed)
+
+prep(bigfoot_rec) %>% bake(new_data = NULL)
+```
+
+
+model specification
+lasso model is good for a model with 1000s of predictors like natural language processing 
+It penalizes and removes unimportant variables 
+```{r}
+glmnet_spec <- 
+    logistic_reg(mixture = 1, penalty = tune()) %>%
+    set_engine("glmnet")
+```
+
+workflow
+```{r}
+bigfoot_wf <-
+    workflow(bigfoot_rec, glmnet_spec)
+```
+
+tuning
+```{r}
+doParallel::registerDoParallel()
+
+set.seed(2345)
+bigfoot_rs <- tune_grid(
+    bigfoot_wf,
+    bigfoot_folds,
+    grid = tibble(penalty = 10 ^ seq(-3, 0, by = 0.3))
+)
+
+autoplot(bigfoot_rs)
+```
+
+
+## Model Eval
+
+show best
+```{r}
+show_best(bigfoot_rs)
+tune::select_by_pct_loss(bigfoot_rs, -penalty, metric = "roc_auc")
+```
+
+
+run on all data using finalize_workflow
+```{r}
+bigfoot_final <-
+    bigfoot_wf %>%
+    finalize_workflow(select_by_pct_loss(bigfoot_rs, -penalty, metric = "roc_auc")) %>%
+    last_fit(bigfoot_split)
+
+bigfoot_final
+```
+
+
+last_fit
+
+
+show eval
+
+
+
+
+
+
+
+
+
+
+
+
+

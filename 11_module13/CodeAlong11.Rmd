@@ -1,0 +1,223 @@
+---
+title: "Code Along 11"
+author: "Daniel Lee"
+date: "2023-05-01"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(timetk)
+library(tidyquant)
+```
+
+
+## Plotting time series
+
+```{r}
+taylor_30_min
+
+taylor_30_min %>%
+    plot_time_series(.date_var = date, .value = value)
+```
+
+```{r}
+m4_daily %>% count(id)
+
+m4_daily %>%
+    group_by(id) %>%
+    plot_time_series(
+        .date_var     = date, 
+        .value        = value, 
+        .facet_ncol   = 2, 
+        .facet_scales = "free", 
+        .interactive  = FALSE)
+```
+
+Visualizing Transformations & Sub-Groups
+
+```{r}
+m4_hourly %>% count(id)
+
+m4_hourly %>%
+    group_by(id) %>%
+    plot_time_series(
+        .date_var = date, 
+        .value    = log(value), 
+        .facet_ncol   = 2, 
+        .facet_scales = "free", 
+        .color_var = week(date))
+```
+
+Static ggplot2 Visualizations & Customizations
+
+```{r}
+taylor_30_min %>%
+  plot_time_series(date, value, 
+                   .color_var = month(date, label = TRUE),
+                   
+                   # Returns static ggplot
+                   .interactive = FALSE, 
+                   
+                   # Customize
+                   .title = "Taylor's MegaWatt Data", 
+                   .x_lab = "Date (30-min intervals)", 
+                   .y_lab = "Energy Demand (MW)", 
+                   .color_lab = "Month")
+```
+
+
+### Box plots
+
+```{r}
+m4_monthly %>% count(id)
+
+m4_monthly %>%
+    filter_by_time(.date_var = date, .end_date = "1976") %>%
+    group_by(id) %>%
+    plot_time_series_boxplot(
+        .date_var = date, 
+        .value    = value, 
+        .period   = "1 year", 
+        .facet_ncol = 2)
+```
+
+### Regression plots
+
+```{r}
+m4_monthly %>%
+    group_by(id) %>%
+    plot_time_series_regression(
+        .date_var = date, 
+        .facet_ncol = 2, 
+        .formula  = log(value) ~ as.numeric(date) + month(date, label = TRUE), 
+        .show_summary = FALSE)
+```
+
+## Plotting Seasonality and Correlation
+
+### Correlation Plots
+
+```{r}
+m4_hourly %>%
+    group_by(id) %>%
+    plot_acf_diagnostics(
+        date, value, 
+        .lags = "7 days")
+```
+
+```{r}
+walmart_sales_weekly %>%
+    group_by(id) %>%
+    plot_acf_diagnostics(
+        Date, Weekly_Sales, 
+        .ccf_vars = c(Temperature, Fuel_Price), 
+        .lags = "3 months")
+```
+
+
+### Seasonality
+
+```{r}
+taylor_30_min %>%
+    plot_seasonal_diagnostics(date, value)
+```
+
+```{r}
+m4_hourly %>% count(id)
+
+m4_hourly %>%
+    group_by(id) %>%
+    plot_seasonal_diagnostics(date, value)
+```
+
+### STL Diagnostics
+
+```{r}
+m4_hourly %>%
+    group_by(id) %>%
+    plot_stl_diagnostics(
+        date, value,
+        .feature_set = c("observed", "season", "trend", "remainder"))
+```
+
+## Time Series Data Wrangling
+
+### Summarize by Time
+daily data
+```{r}
+FANG %>%
+  group_by(symbol) %>%
+  plot_time_series(date, volume, .facet_ncol = 2, .interactive = FALSE)
+```
+
+summarize it by quarter
+```{r}
+FANG %>%
+    group_by(symbol) %>%
+    summarise_by_time(.date_var = date, volume = sum(volume), .by = "quarter") %>%
+    plot_time_series(date, volume, .facet_ncol = 2, .interactive = FALSE)
+```
+
+```{r}
+FANG %>%
+    group_by(symbol) %>%
+    summarise_by_time(.date_var = date, adjusted = mean(adjusted), .by = "month") %>%
+    plot_time_series(date, adjusted, .facet_ncol = 2, .interactive = FALSE)
+```
+
+
+### Filter By Time
+
+```{r}
+FANG %>%
+    group_by(symbol) %>%
+    filter_by_time(.date_var = date, 
+                   .start_date = "2013-09", 
+                   .end_date = "2013") %>%
+    plot_time_series(date, adjusted, .facet_ncol = 2)
+```
+
+### Padding Data
+
+```{r}
+FANG %>%
+    group_by(symbol) %>%
+    pad_by_time(date, .by = "day", .pad_value = 0)
+```
+
+### Sliding (Rolling) Calculations
+
+```{r}
+FANG %>%
+    head(10) %>%
+    mutate(rolling_avg_2 = slidify_vec(adjusted, mean, 
+                                       .period = 2, 
+                                       .align = "right", 
+                                       .partial = TRUE))
+```
+
+
+```{r}
+# Rolling regressions are easy to implement using `.unlist = FALSE`
+lm_roll <- slidify(~ lm(..1 ~ ..2 + ..3), .period = 90, 
+                   .unlist = FALSE, .align = "right")
+
+
+FANG %>%
+  select(symbol, date, adjusted, volume) %>%
+  group_by(symbol) %>%
+  mutate(numeric_date = as.numeric(date)) %>%
+  # Apply rolling regression
+  mutate(rolling_lm = lm_roll(adjusted, volume, numeric_date)) %>%
+  filter(!is.na(rolling_lm))
+```
+

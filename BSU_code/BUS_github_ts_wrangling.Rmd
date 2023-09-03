@@ -1,0 +1,55 @@
+---
+title: "Time Series Data Wrangling"
+author: "Daniel Lee"
+date: "2023-04-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+```
+
+The following is the replication of [Matt Dancho's tutorial on this page](https://business-science.github.io/timetk/articles/TK07_Time_Series_Data_Wrangling.html)
+
+```{r}
+FANG
+```
+
+## Visualize timeseries
+```{r}
+FANG %>%
+    group_by(symbol) %>%
+    timetk::plot_time_series(.date_var = date, .value = adjusted, .facet_ncol = 2)
+```
+
+## Summarize by Time
+
+```{r}
+FANG %>%
+    group_by(symbol) %>%
+    timetk::summarise_by_time(.date_var = date,
+                              .by       = "quarter", 
+                              volume    = sum(volume)) %>%
+    timetk::plot_time_series(date, volume, .facet_ncol = 2)
+```
+
+## Filter by Time 
+```{r}
+FANG %>%
+    timetk::filter_by_time(.date_var = date, .start_date = "2014", .end_date = "end")
+```
+
+## Padding data
+```{r}
+FANG %>%
+    head(5) %>%
+    timetk::pad_by_time(.date_var = date, .by = "day", .fill_na_direction = "down")
+```
+
+

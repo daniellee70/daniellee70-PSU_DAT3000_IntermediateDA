@@ -1,0 +1,246 @@
+---
+title: "Code Along 1"
+subtitle: "Predicting IKEA Prices"
+author: "Daniel Lee"
+date: "2023-03-07"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+Our modeling goal is to predict the price of IKEA furniture from other furniture characteristics like category and size. 
+
+We will use the latest tidyAML package.
+
+
+## Explore Data
+
+```{r}
+library(tidyverse)
+ikea <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-11-03/ikea.csv")
+
+```
+
+```{r}
+ikea %>%
+  select(...1, price, depth:width) %>%
+  pivot_longer(depth:width, names_to = "dim") %>%
+  ggplot(aes(value, price, color = dim)) +
+  geom_point(alpha = 0.4, show.legend = FALSE) +
+  scale_y_log10() +
+  facet_wrap(~dim, scales = "free_x") +
+  labs(x = NULL)
+```
+
+Transform data
+log-transform and convert to factors
+```{r}
+ikea_df <- ikea %>%
+  select(price, name, category, depth, height, width) %>%
+  mutate(price = log10(price)) %>%
+  mutate_if(is.character, factor)
+
+ikea_df
+```
+
+## Build a Model
+
+split data
+```{r eval = FALSE}
+library(tidymodels)
+
+set.seed(123)
+ikea_split <- initial_split(ikea_df, strata = price)
+ikea_train <- training(ikea_split)
+ikea_test  <- testing(ikea_split)
+
+# Data are too small for cv
+# rsample::vfold_cv(ikea_train)
+set.seed(234)
+ikea_folds <- rsample::bootstraps(ikea_train)
+ikea_folds
+
+```
+
+```{r eval=FALSE}
+library(usemodels)
+
+usemodels::use_ranger(price ~ ., data = ikea_train)
+```
+
+```{r eval = FALSE}
+library(textrecipes)
+ranger_recipe <- 
+  recipe(formula = price ~ ., data = ikea_train) %>%
+    step_other(name, category, threshold = 0.01) %>%
+    step_clean_levels(name, category) %>%
+    step_impute_knn(depth, height, width)
+
+ranger_spec <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("regression") %>% 
+  set_engine("ranger") 
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec) 
+
+set.seed(57439)
+ranger_tune <-
+  tune_grid(ranger_workflow, 
+            ikea_folds, 
+            grid = 2)
+```
+
+Use tidyAML
+I tried it 5/1/2023 and had trouble installing dependent packages.
+Many dependent packages require the latest version of R and themselves.
+Try it again in a few months.
+```{r eval = FALSE}
+library(textrecipes)
+rec_obj <- 
+  recipe(formula = price ~ ., data = ikea_df) %>%
+    step_other(name, category, threshold = 0.01) %>%
+    step_clean_levels(name, category) %>%
+    step_impute_knn(depth, height, width)
+
+library(tidyAML)
+core_packages()
+
+frt_tbl <- tidyAML::fast_regression(
+    .data = ikea_df, 
+    .rec_obj = rec_obj
+    )
+```
+
+
+
+## Evaluate Models
+
+1. View the best model
+```{r}
+show_best(ranger_tune, metric = "rmse")
+autoplot(ranger_tune)
+```
+
+2. Fit the best model to train data
+```{r}
+final_ranger <- ranger_workflow %>%
+    finalize_workflow(select_best(ranger_tune, metric = "rmse"))
+```
+
+3. Fit the best model to train data and evaluate on test data
+```{r}
+ikea_fit <- tune::last_fit(final_ranger, ikea_split)
+```
+
+4. Collect metrics
+```{r}
+tune::collect_metrics(ikea_fit)
+```
+
+5. Collect predictions
+```{r}
+tune::collect_predictions(ikea_fit)
+
+collect_predictions(ikea_fit) %>%
+    
+    ggplot(aes(price, .pred)) +
+    geom_point(alpha = 0.5, color = "midnightblue") +
+    geom_abline(lty = 2, color = "gray50") +
+    coord_fixed()
+```
+
+6. Predict
+```{r}
+ikea_fit %>%
+    extract_workflow() %>%
+    predict(ikea_test[1,])
+```
+
+7. View important variables
+
+```{r}
+library(vip)
+
+imp_spec <- ranger_spec %>%
+    tune::finalize_model(tune::select_best(ranger_tune)) %>%
+    parsnip::set_engine("ranger", importance = "permutation")
+
+workflows::workflow() %>%
+    add_recipe(ranger_recipe) %>%
+    add_model(imp_spec) %>%
+    fit(ikea_train) %>%
+    workflows::pull_workflow_fit() %>%
+    vip()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Question and Data
+
+#### What is the research question?
+
+
+#### Describe the data briefly.
+
+
+#### Describe the first observation (the first row) in the data.
+
+
+
+
+### Data Exploration and Transformation
+
+#### What are the characteristics of the key variables used in the analysis? For example, which of the predictors seems to have correlations with the outcome variable? Does any variable have a skewed distribution, missing values, or incorrect information?
+
+
+#### Describe the differences between the original data and the data transformed for modeling. Why?
+
+
+
+
+### Data Preparation and Modeling
+
+#### What are the names of data preparation steps (e.g., step_dummy) mentioned in the video?
+
+
+#### What is the name of the machine learning models (e.g., random forest) used in the analysis?
+
+
+#### Describe the steps taken for data preparation. Why?
+
+
+#### Describe the characteristics of the models used in the analysis, including their advantages and disadvantages.
+
+
+
+
+### Model Evaluation
+
+#### What metrics are used in the model evaluation?
+
+
+#### Describe the characteristics of the metrics used in the analysis, including their advantages and disadvantages.
+
+
+
+
+### Conclusion
+
+#### What are the major findings?

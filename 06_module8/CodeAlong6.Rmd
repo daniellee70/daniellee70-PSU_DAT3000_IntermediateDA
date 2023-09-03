@@ -1,0 +1,173 @@
+---
+title: "Code Along 6"
+subtitle: "High cardinality predictors for #TidyTuesday museums in the UK"
+output: 
+  html_document: 
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+Our modeling goal is to predict whether a water source actually has water available at it, based on characteristics of the water source observed during a visit. Let’s start by reading in the data.
+
+
+# Explore Data
+
+```{r}
+library(tidyverse)
+museums <- read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-11-22/museums.csv')
+
+```
+
+```{r}
+museums %>% count(Accreditation)
+
+museums %>% count(Subject_Matter, sort = TRUE)
+
+top_subjects <- museums %>%
+    count(Subject_Matter, sort = TRUE) %>%
+    slice_max(n, n = 6) %>%
+    pull(Subject_Matter)
+
+top_subjects
+
+museums %>%
+    filter(Subject_Matter %in% top_subjects) %>%
+    count(Accreditation, Subject_Matter) %>%
+    
+    ggplot(aes(Accreditation, n, fill = Accreditation)) +
+    geom_col() +
+    facet_wrap(vars(Subject_Matter), scales = "free")
+
+```
+
+```{r}
+top_gov <- museums %>% count(Governance) %>% slice_max(n, n = 4) %>% pull(Governance)
+
+museums %>%
+  filter(Governance %in% top_gov) %>%
+  count(Governance, Accreditation) %>%
+  ggplot(aes(Accreditation, n, fill = Accreditation)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(vars(Governance), scales = "free_y") +
+  labs(x = NULL, y = "Number of museums")
+```
+
+```{r}
+museum_parsed <-
+  museums %>%
+  select(museum_id, Accreditation, Governance, Size,
+         Subject_Matter, Year_opened, Year_closed, Area_Deprivation_index) %>%
+  mutate(Year_opened = parse_number(Year_opened),
+         IsClosed = if_else(Year_closed == "9999:9999", "Open", "Closed")) %>%
+  select(-Year_closed) %>%
+  na.omit() %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  mutate(museum_id = as.character(museum_id))
+
+glimpse(museum_parsed)
+```
+
+## Feature engineering for high cardinality 
+
+## *Split data
+```{r}
+library(tidymodels)
+
+set.seed(123)
+museum_split <- initial_split(museum_parsed, strata = Accreditation)
+
+museum_train <- training(museum_split)
+museum_test <- testing(museum_split)
+
+set.seed(234)
+museum_folds <- vfold_cv(museum_train, strata = Accreditation)
+museum_folds
+```
+
+## *feature engineering
+```{r}
+library(embed)
+
+museum_rec <- 
+  recipe(Accreditation ~ ., data = museum_train) %>%
+  update_role(museum_id, new_role = "id") %>%
+  step_lencode_glm(Subject_Matter, outcome = vars(Accreditation)) %>%
+  step_dummy(all_nominal_predictors())
+
+museum_rec
+```
+
+
+```{r}
+prep(museum_rec) %>% tidy(number = 1)
+```
+
+## *Model specification
+```{r}
+xgb_spec <- 
+    boost_tree(
+        mtry = tune(), 
+        trees = tune(), 
+        min_n = tune(), 
+        learn_rate = 0.01
+    ) %>%
+    set_engine("xgboost") %>%
+    set_mode("classification")
+
+xgb_wf <- workflow(museum_rec, xgb_spec)
+```
+
+
+## *Tuning
+```{r}
+library(finetune)
+doParallel::registerDoParallel()
+
+set.seed(234)
+xgb_rs <- 
+    tune_grid(
+        xgb_wf,
+        museum_folds,
+        control = control_grid(save_pred = TRUE)
+    )
+
+```
+
+## *Show performance
+```{r}
+collect_metrics(xgb_rs)
+collect_predictions(xgb_rs) %>%
+    group_by(id) %>%
+    roc_curve(Accreditation, .pred_Accredited) %>%
+    autoplot()
+```
+
+## *Last fit
+```{r}
+xgb_last <- xgb_wf %>%
+    tune::finalize_workflow(select_best(xgb_rs, "accuracy")) %>%
+    last_fit(split = museum_split)
+
+xgb_last
+```
+
+## *Show performance
+```{r}
+collect_metrics(xgb_last)
+collect_predictions(xgb_last) %>%
+    yardstick::conf_mat(Accreditation, .pred_class)
+```
+
+## *Variable importance
+```{r}
+library(vip)
+xgb_last %>%
+  extract_fit_engine() %>%
+  vip()
+```
+

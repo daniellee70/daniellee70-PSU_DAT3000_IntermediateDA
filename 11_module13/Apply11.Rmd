@@ -1,0 +1,90 @@
+---
+title: "Apply 11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# for Core packages
+library(tidyverse)
+
+# for financial analysis
+library(tidyquant)
+
+# for times series
+library(timetk)
+```
+
+Goal: Apply Matt Dancho's tutorial to state unemployment initial claims of New England states.
+
+The following is the replication of [Matt Dancho's tutorial on this page](https://business-science.github.io/timetk/articles/TK05_Plotting_Seasonality_and_Correlation.html#stl-diagnostics)
+
+```{r}
+start_date <- "1989-01-01"
+
+symbols_txt <- c("CTICLAIMS", # Connecticut
+                 "MEICLAIMS", # Maine
+                 "MAICLAIMS", # Massachusetts
+                 "NHICLAIMS", # New Hampshire
+                 "RIICLAIMS", # Rhode Island
+                 "VTICLAIMS") # Vermont
+
+claims_tbl <- tq_get(symbols_txt, get = "economic.data", from = start_date) %>%
+    mutate(symbol = fct_recode(symbol,
+                               "Connecticut"   = "CTICLAIMS",
+                               "Maine"         = "MEICLAIMS",
+                               "Massachusetts" = "MAICLAIMS",
+                               "New Hampshire" = "NHICLAIMS",
+                               "Rhode Island"  = "RIICLAIMS",
+                               "Vermont"       = "VTICLAIMS")) %>%
+    rename(claims = price)
+```
+
+
+## Plotting time series
+
+
+
+### Box plots
+
+
+### Regression plots
+
+
+
+## Plotting Seasonality and Correlation
+
+### Correlation Plots
+
+
+
+### Seasonality
+
+
+
+### STL Diagnostics
+
+
+
+## Time Series Data Wrangling
+
+### Summarize by Time
+
+
+
+### Filter By Time
+
+
+
+### Padding Data
+
+
+
+### Sliding (Rolling) Calculations
+
+

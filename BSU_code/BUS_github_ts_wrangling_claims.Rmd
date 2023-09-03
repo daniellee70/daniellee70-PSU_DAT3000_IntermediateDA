@@ -1,0 +1,148 @@
+---
+title: "Time Series Data Wrangling"
+author: "Daniel Lee"
+date: "2023-04-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+```
+
+Goal: Apply Matt Dancho's tutorial to state unemployment initial claims of New England states.
+
+The following is the replication of [Matt Dancho's tutorial on this page](https://business-science.github.io/timetk/articles/TK07_Time_Series_Data_Wrangling.html)
+
+```{r}
+symbols_txt <- c("CTICLAIMS", # Connecticut
+                 "MEICLAIMS", # Maine
+                 "MAICLAIMS", # Massachusetts
+                 "NHICLAIMS", # New Hampshire
+                 "RIICLAIMS", # Rhode Island
+                 "VTICLAIMS") # Vermont
+
+claims_tbl <- tq_get(symbols_txt, get = "economic.data") %>%
+    mutate(symbol = fct_recode(symbol,
+                               "Connecticut"   = "CTICLAIMS",
+                               "Maine"         = "MEICLAIMS",
+                               "Massachusetts" = "MAICLAIMS",
+                               "New Hampshire" = "NHICLAIMS",
+                               "Rhode Island"  = "RIICLAIMS",
+                               "Vermont"       = "VTICLAIMS")) %>%
+    rename(claims = price)
+```
+
+## Visualize timeseries
+```{r}
+claims_tbl %>%
+    group_by(symbol) %>%
+    timetk::plot_time_series(.date_var = date, .value = claims, .facet_ncol = 2)
+
+claims_tbl %>%
+    group_by(symbol) %>%
+    timetk::plot_time_series(.date_var = date, .value = claims, .facet_ncol = 2, .interactive = FALSE) + coord_cartesian(ylim = c(0,1e4))
+```
+
+## Summarize by Time
+
+```{r}
+claims_tbl %>%
+    group_by(symbol) %>%
+    timetk::summarise_by_time(.date_var = date,
+                              .by       = "month", 
+                              claims    = sum(claims)) %>%
+    timetk::plot_time_series(date, claims, .facet_ncol = 2)
+```
+
+## Filter by Time 
+```{r}
+claims_tbl %>%
+    timetk::filter_by_time(.date_var = date, .start_date = "start", .end_date = "2020-02") 
+
+claims_tbl %>%
+    timetk::filter_by_time(.date_var = date, .start_date = "start", .end_date = "2020-02") %>%
+    group_by(symbol) %>% slice((n()-1):n())
+```
+
+## Padding data
+
+### Fill in gaps
+```{r}
+claims_tbl %>%
+    group_by(symbol) %>%
+    slice_max(order_by = desc(date), n = 2) %>%
+    timetk::pad_by_time(.date_var = date, .by = "day", .fill_na_direction = "down")
+```
+
+### Low to high frequency
+```{r}
+claims_tbl %>%
+    group_by(symbol) %>%
+    # slice_max(order_by = desc(date), n = 2) %>%
+    timetk::pad_by_time(.date_var = date, .by = "day") %>%
+    mutate(claims_interp = ts_impute_vec(claims, period =1)) %>%
+    filter_by_time(.date_var = date, "start", first(date) %+time% "1 month") %>%
+    plot_time_series(.date_var = date, 
+                     .value = claims_interp, 
+                     .facet_ncol = 2, 
+                     .smooth = FALSE)
+```
+
+## Sliding (Rolling) Calculations
+
+### Rolling mean
+```{r}
+FANG %>%
+  select(symbol, date, adjusted) %>%
+  group_by(symbol) %>%
+  # Apply roll apply Function
+  mutate(rolling_avg_30 = slidify_vec(adjusted,  mean, 
+                                      .period = 30, .partial = TRUE))
+```
+
+### Rolling regression
+Objective: Calculate a rolling regression.
+
+* This is a complex sliding (rolling) calculation that requires multiple columns to be involved.
+* slidify() is built for this.
+* Use the multi-variable purrr ..1, ..2, ..3, etc notation to setup a function
+
+```{r}
+# Rolling regressions are easy to implement using `.unlist = FALSE`
+lm_roll <- slidify(~ lm(..1 ~ ..2 + ..3), .period = 90, 
+                   .unlist = FALSE, .align = "right")
+
+
+FANG %>%
+  select(symbol, date, adjusted, volume) %>%
+  group_by(symbol) %>%
+  mutate(numeric_date = as.numeric(date)) %>%
+  # Apply rolling regression
+  mutate(rolling_lm = lm_roll(adjusted, volume, numeric_date)) %>%
+  filter(!is.na(rolling_lm))
+```
+
+```{r}
+# Rolling regressions are easy to implement using `.unlist = FALSE`
+lm_roll <- slidify(~ lm(..1 ~ ..2), .period = 90, 
+                   .unlist = FALSE, .align = "right")
+
+
+claims_tbl %>%
+  group_by(symbol) %>%
+  mutate(numeric_date = as.numeric(date)) %>%
+  # Apply rolling regression
+  mutate(rolling_lm = lm_roll(claims, numeric_date)) %>%
+  filter(!is.na(rolling_lm))
+```
+
+
+
+
+

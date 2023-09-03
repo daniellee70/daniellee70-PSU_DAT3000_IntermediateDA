@@ -1,0 +1,150 @@
+---
+title: "Time Series Data Wrangling"
+author: "Daniel Lee"
+date: "2023-04-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+```
+
+Goal: Apply Matt Dancho's tutorial to state unemployment initial claims of New England states.
+
+The following is the replication of [Matt Dancho's tutorial on this page](https://business-science.github.io/timetk/articles/TK05_Plotting_Seasonality_and_Correlation.html#stl-diagnostics)
+
+```{r}
+start_date <- "1989-01-01"
+
+symbols_txt <- c("CTICLAIMS", # Connecticut
+                 "MEICLAIMS", # Maine
+                 "MAICLAIMS", # Massachusetts
+                 "NHICLAIMS", # New Hampshire
+                 "RIICLAIMS", # Rhode Island
+                 "VTICLAIMS") # Vermont
+
+claims_tbl <- tq_get(symbols_txt, get = "economic.data", from = start_date) %>%
+    mutate(symbol = fct_recode(symbol,
+                               "Connecticut"   = "CTICLAIMS",
+                               "Maine"         = "MEICLAIMS",
+                               "Massachusetts" = "MAICLAIMS",
+                               "New Hampshire" = "NHICLAIMS",
+                               "Rhode Island"  = "RIICLAIMS",
+                               "Vermont"       = "VTICLAIMS")) %>%
+    rename(claims = price)
+```
+
+## Correlation Plots
+
+### ACF Diagnostics
+Lags correlated with the original series: lag 1, lag 534, and lag 537
+```{r}
+claims_tbl %>%
+    plot_acf_diagnostics(date, .value = claims, .lags = "1 month")
+```
+
+### Grouped ACF Diagnostics
+
+```{r}
+claims_tbl %>%
+    group_by(symbol) %>%
+    plot_acf_diagnostics(date, .value = claims, .lags = "1 month")
+```
+
+### Grouped CCF Plots
+
+Check correlation with other series and their lags.
+```{r}
+claims_us_tbl <- tq_get(x = "ICNSA", get = "economic.data", from = start_date) %>%
+    rename(claims_us = price) %>%
+    select(-symbol)
+
+ffr_daily_tbl <- tq_get(x = "DFF", get = "economic.data", from = start_date)
+ffr_weekly_tbl <- ffr_daily_tbl %>%
+    summarise_by_time(.date_var = date, .by = "week", ffr = mean(price, na.rm = TRUE)) %>%
+    # Add 6 days to align with other series
+    mutate(date = date %+time% "6 days")
+
+
+claims_ne_us_ffr_tbl <- claims_tbl %>%
+    left_join(claims_us_tbl) %>%
+    left_join(ffr_weekly_tbl)
+
+claims_ne_us_ffr_tbl %>%
+    plot_acf_diagnostics(
+        date, claims,                 # ACF & PACF
+        .ccf_vars = c(claims_us, ffr), # Cross Correlation F
+        .lags = "3 months")
+
+claims_ne_us_ffr_tbl %>%
+    plot_acf_diagnostics(
+        date, claims,                 # ACF & PACF
+        .ccf_vars = c(claims_us, ffr), # Cross Correlation F
+        .lags = "3 months", 
+        .show_ccf_vars_only = TRUE)
+
+
+claims_ne_us_ffr_tbl %>%
+    group_by(symbol) %>%
+    plot_acf_diagnostics(
+        date, claims,                 # ACF & PACF
+        .ccf_vars = c(claims_us, ffr), # Cross Correlation F
+        .lags = "1 month", 
+        .show_ccf_vars_only = TRUE)
+```
+
+## Seasonality
+
+### Seasonal Visualizations
+```{r}
+claims_tbl %>%
+    plot_seasonal_diagnostics(date, claims)
+
+claims_tbl %>%
+    plot_seasonal_diagnostics(date, log(claims))
+```
+
+### Grouped Seasonal Visualizations
+```{r}
+claims_tbl %>%
+    group_by(symbol) %>%
+    plot_seasonal_diagnostics(date, log(claims))
+
+
+claims_tbl %>%
+    filter(symbol %in% c("New Hampshire", "Massachusetts")) %>%
+    group_by(symbol) %>%
+    plot_seasonal_diagnostics(date, log(claims))
+
+# Remove impacts of the Pandemic
+claims_tbl %>%
+    filter(symbol %in% c("New Hampshire", "Massachusetts")) %>%
+    filter_by_time(date, .end_date = "2020-02")%>%
+    group_by(symbol) %>%
+    plot_seasonal_diagnostics(date, log(claims))
+```
+
+## STL Diagnostics
+```{r}
+claims_tbl %>%
+    group_by(symbol) %>%
+    plot_stl_diagnostics(
+        date, log(claims),
+        .feature_set = c("observed", "season", "trend", "remainder"),
+        .facet_scales = "free_y")
+
+claims_tbl %>%
+    filter(symbol %in% c("New Hampshire", "Massachusetts")) %>%
+    group_by(symbol) %>%
+    plot_stl_diagnostics(
+        date, log(claims),
+        .feature_set = c("observed", "season", "trend", "remainder"),
+        .facet_scales = "free_y")
+```
+

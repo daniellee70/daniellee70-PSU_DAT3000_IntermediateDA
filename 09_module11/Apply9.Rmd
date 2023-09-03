@@ -1,0 +1,190 @@
+---
+title: "Apply it to your Data 9"
+author: "Dean Stone"
+date: "2023-04-20"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Explore Data
+
+```{r}
+library(tidyverse)
+library(tidyquant)
+
+big_tech_stock_prices <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-02-07/big_tech_stock_prices.csv')
+big_tech_companies <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-02-07/big_tech_companies.csv')
+```
+
+Explore data
+```{r}
+big_tech_stock_prices %>% count(stock_symbol) # META and TSLA have smaller number of rows
+
+big_tech_stock_prices %>%
+    group_by(stock_symbol) %>%
+    slice_max(desc(date), n = 1)              # META starts in 2012-05-18 and TSLA in 2010-06-30
+
+big_tech_stock_prices %>%
+    group_by(stock_symbol) %>%
+    slice_min(desc(date), n = 1)              # META ends in 2023-01-24
+
+# Rearrange so all stocks have the same dates
+big_tech_stock_prices <- big_tech_stock_prices %>%
+    # Filter out so all stocks start in 2012-05-18
+    filter(date >= "2012-05-018", date <= "2022-12-29")
+```
+
+
+
+
+```{r}
+# standardize and normalize
+stocks_tidy <- big_tech_stock_prices %>%
+    
+    group_by(stock_symbol) %>%
+    
+    tq_transmute(select     = adj_close, 
+                 mutate_fun = periodReturn, 
+                 period     = "monthly",
+                 type       = "log") %>%
+    
+    ungroup()
+
+stocks_tidy
+```
+
+```{r}
+# Spread to the format required for clustering
+stocks_demo <- stocks_tidy %>%
+    pivot_wider(names_from = date, values_from = monthly.returns)
+
+stocks_demo
+```
+
+## Implement k-means clustering
+
+```{r}
+stocks_clust <- kmeans(stocks_demo %>% select(-stock_symbol), centers = 3)
+summary(stocks_clust)
+```
+
+```{r}
+library(broom)
+tidy(stocks_clust)
+```
+
+```{r}
+augment(stocks_clust, stocks_demo) %>%
+  ggplot(aes(`2022-12-29`, `2012-05-31`, color = .cluster)) +
+  geom_point()
+```
+
+## Choosing K
+
+```{r}
+kclusts <-
+  tibble(k = 1:9) %>%
+  mutate(
+    kclust = map(k, ~ kmeans(select(stocks_demo, -stock_symbol), .x)),
+    glanced = map(kclust, glance)
+  )
+
+kclusts %>%
+  unnest(cols = c(glanced)) %>%
+  ggplot(aes(k, tot.withinss)) +
+  geom_line(alpha = 0.5, size = 1.2, color = "midnightblue") +
+  geom_point(size = 2, color = "midnightblue")
+```
+
+```{r}
+final_clust <- kmeans(select(stocks_demo, -stock_symbol), centers = 5)
+```
+
+```{r}
+library(plotly)
+
+p <- augment(final_clust, stocks_demo) %>%
+  ggplot(aes(`2022-12-29`, `2012-05-31`, color = .cluster, name = stock_symbol)) +
+  geom_point()
+
+ggplotly(p, height = 500)
+```
+
+```{r eval=F}
+# Use UMAP to get 2-D Projection ----
+# UMAP wouldn't work because the data is too small. A solution is to add more stocks.
+library(umap)
+?umap
+
+umap_obj <- stocks_demo %>% 
+    select(-stock_symbol) %>%
+    umap()
+
+umap_results_tbl <- umap_obj$layout %>%
+    as_tibble() %>%
+    set_names(c("x", "y")) %>%
+    bind_cols(
+        customer_product_tbl %>% select(bikeshop_name)
+    )
+
+umap_results_tbl %>%
+    ggplot(aes(x, y)) +
+    geom_point() + 
+    geom_label_repel(aes(label = bikeshop_name), size = 3)
+```
+
+
+### Question and Data
+
+#### What is the research question?
+
+
+#### Describe the data briefly.
+
+
+#### Which of the variables is the target variable (one that the model is predicting)? How is it different from the target variables from the first four case studies?
+
+
+#### Describe the first observation (the first row) in the data.
+
+### Data Exploration and Transformation
+
+#### What are the characteristics of the key variables used in the analysis? For example, which of the predictors seems to have correlations with the outcome variable? Does any variable have a skewed distribution, missing values, or incorrect information?
+
+
+#### Describe the differences between the original data and the data transformed for modeling. Why?
+
+
+
+### Data Preparation and Modeling
+
+#### What are the names of data preparation steps (e.g., step_dummy) mentioned in the video?
+
+
+#### What is the name of the machine learning models (e.g., random forest) used in the analysis?
+
+
+#### Describe the steps taken for data preparation. Why?
+
+
+#### Describe the characteristics of the models used in the analysis, including their advantages and disadvantages.
+
+
+
+### Model Evaluation
+
+#### What metrics are used in the model evaluation?
+
+
+#### Describe the characteristics of the metrics used in the analysis, including their advantages and disadvantages.
+
+
+
+### Conclusion
+
+#### What are the major findings?

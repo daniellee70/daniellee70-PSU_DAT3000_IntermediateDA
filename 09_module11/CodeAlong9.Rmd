@@ -1,0 +1,88 @@
+---
+title: "Code Along 9"
+subtitle: "Getting started with k-means and #TidyTuesday employment status"
+author: "Daniel Lee"
+date: "2023-04-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Our modeling goal is to use k-means clustering to explore employment by race and gender. This is a good screencast for folks who are more new to k-means and want to understand how to apply it to a real-world data set.
+
+```{r}
+library(tidyverse)
+
+employed <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-02-23/employed.csv")
+```
+
+## Explore data
+
+```{r}
+count(employed, industry)
+count(employed, minor_occupation)
+count(employed, race_gender)
+count(employed, year)
+count(employed, year, industry, minor_occupation, race_gender)
+```
+
+```{r}
+employed_tidy <- employed %>%
+    filter(!is.na(employ_n)) %>%
+    group_by(occupation = paste(industry, minor_occupation),
+             race_gender) %>%
+    summarise(n = mean(employ_n)) %>%
+    ungroup() 
+
+employed_tidy
+
+employed_tidy %>%
+    filter(race_gender == "TOTAL") 
+
+employment_demo <- employed_tidy %>%
+    filter(!race_gender %in% c("White", "Men")) %>%
+    pivot_wider(names_from = race_gender, values_from = n) %>%
+    janitor::clean_names() %>%
+    filter(total > 1e3) %>%
+    mutate(across(c(asian, black_or_african_american, women), ~ ./total),
+           total = log(total),
+           across(where(is.numeric), ~ as.numeric(scale(.)))) %>%
+    mutate(occupation = snakecase::to_snake_case(occupation))
+
+employment_demo
+```
+
+## Build a model
+
+```{r}
+employed_k <- kmeans(employment_demo %>% select(-occupation), centers = 3)
+
+```
+
+```{r}
+library(broom)
+
+tidy(employed_k)
+glance(employed_k)
+augment(employed_k, data = employment_demo)
+```
+
+
+## Select k
+```{r}
+kclusts <- tibble(k = 1:9) %>%
+    mutate(kclust = map(.x = k, .f = ~kmeans(employment_demo %>% select(-occupation), centers = .x)),
+           glanced = map(.x = kclust, .f = glance))
+
+kclusts %>%
+    unnest(glanced) %>%
+    ggplot(aes(k, tot.withinss)) +
+    geom_line() +
+    geom_point()
+
+```
+

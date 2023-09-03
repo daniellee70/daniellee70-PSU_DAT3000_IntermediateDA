@@ -1,0 +1,186 @@
+---
+title: "Apply 10"
+subtitle: "Topic modeling for #TidyTuesday Bigfoot sightings"
+author: "Daniel Lee"
+date: "2023-04-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Our modeling goal is to “discover” topics in the [lyrics of Spice Girls songs](https://github.com/rfordatascience/tidytuesday/blob/master/data/2021/2021-12-14/readme.md). Instead of a supervised or predictive model where our observations have labels, this is an unsupervised approach.
+
+
+https://juliasilge.com/blog/spice-girls/
+
+equivalent terms between bigfoot and spice girls data
+
+* song_name = observations
+* topic     = classification
+
+```{r}
+library(tidyverse)
+library(tidytext)
+
+bigfoot_raw <- read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-09-13/bigfoot.csv')
+```
+
+## Explore data
+
+```{r}
+bigfoot_raw %>%
+  count(classification)
+
+bigfoot <-
+    bigfoot_raw %>%
+    filter(classification != "Class C", !is.na(observed)) %>%
+    mutate(
+        classification = case_when(
+        classification == "Class A" ~ "sighting",
+        classification == "Class B" ~ "possible"
+      )
+    ) %>%
+    
+    # Create a new variable, observation id, equivalent of song_name in the Spice Girls case
+    mutate(obs_id = row_number()) %>%
+    select(obs_id, observed, season, county, state)
+
+bigfoot
+```
+
+```{r}
+tidy_bigfoot <-
+  bigfoot %>%
+  unnest_tokens(word, observed) %>%
+  anti_join(get_stopwords())
+
+tidy_bigfoot %>%
+  count(word, sort = TRUE)
+
+tidy_bigfoot %>%
+  count(obs_id, word, sort = TRUE)
+```
+
+## Train a topic model 
+
+To train a topic model with the stm package, we need to create a sparse matrix from our tidy dataframe of tokens.
+
+```{r}
+bigfoot_sparse <-
+  tidy_bigfoot %>%
+  count(obs_id, word) %>%
+  cast_sparse(obs_id, word, n)
+
+dim(bigfoot_sparse)
+```
+
+This means there are 31 songs (i.e. documents) and different tokens (i.e. terms or words) in our dataset for modeling.
+
+A topic model like this one models:
+
+* each document as a mixture of topics
+* each topic as a mixture of words
+
+The most important parameter when training a topic modeling is K, the number of topics. This is like k in k-means in that it is a hyperparamter of the model and we must choose this value ahead of time. We could try multiple different values to find the best value for K, but this is a very small dataset so let’s just stick with K = 4.
+
+```{r}
+library(stm)
+set.seed(123)
+
+# Choose 2 for K because we know it has two classes
+topic_model <- stm(bigfoot_sparse, K = 2, verbose = FALSE)
+```
+
+
+To get a quick view of the results, we can use summary().
+
+```{r}
+summary(topic_model)
+
+```
+
+## Explore topic model results
+
+To explore more deeply, we can tidy() the topic model results to get a dataframe that we can compute on. There are two possible outputs for this topic model, the "beta" matrix of topic-word probabilities and the "gamma" matrix of document-topic probabilities. Let’s start with the first.
+
+```{r}
+word_topics <- tidy(topic_model, matrix = "beta")
+word_topics
+```
+
+Since this is a tidy dataframe, we can manipulate it how we like, include making a visualization showing the highest probability words from each topic.
+
+```{r}
+word_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup() %>%
+  mutate(topic = paste("Topic", topic)) %>%
+  ggplot(aes(beta, reorder_within(term, beta, topic), fill = topic)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(vars(topic), scales = "free_y") +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_reordered() +
+  labs(x = expression(beta), y = NULL)
+```
+
+What about the other matrix? We also need to pass in the document_names.
+
+```{r}
+observation_topics <- tidy(topic_model,
+  matrix = "gamma",
+  document_names = rownames(bigfoot_sparse)
+)
+observation_topics
+
+
+```
+
+Remember that each document (song) was modeled as a mixture of topics. How did that turn out?
+
+```{r}
+# Let's sample a few for each topic (or classification) b/c there are too many to plot
+set.seed(123)
+observation_topics_sample <- observation_topics %>%
+    group_by(topic) %>%
+    sample_n(10) %>%
+    ungroup()
+    
+observation_topics_sample
+
+
+observation_topics_sample %>%
+  mutate(
+    obs_id = fct_reorder(document, gamma),
+    topic = factor(topic)
+  ) %>%
+  ggplot(aes(gamma, topic, fill = topic)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(vars(obs_id), ncol = 4) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(x = expression(gamma), y = "Topic")
+```
+
+The songs near the top of this plot are mostly one topic, while the songs near the bottom are more a mix.
+
+There is a TON more you can do with topic models. For example, we can take the trained topic model and, using some supplementary metadata on our documents, estimate regressions for the proportion of each document about a topic with the metadata as the predictors. For example, let’s estimate regressions for our four topics with the album name as the predictor. This asks the question, “Do the topics in Spice Girls songs change across albums?”
+
+```{r}
+effects <-
+  estimateEffect(
+    1:2 ~ season,
+    topic_model,
+    tidy_bigfoot %>% distinct(obs_id, season) %>% arrange(obs_id)
+  )
+
+summary(effects)
+tidy(effects)
+
+```
+
+Looks like there is no statistical evidence of change in the lyrical content of the Spice Girls songs across these three albums!
+
